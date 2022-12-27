@@ -28,6 +28,16 @@ these buttons for our use.
 
 extern const uint8_t image_data[0x12c1] PROGMEM;
 
+
+
+// ===== Corection mode ======
+// In order to initiate correction mode, add the lines that failed below like:
+// const int linesToCorrect[] = {9, 10, 68, 69};
+// Count the lines starting with 0.
+const int linesToCorrect[] = {};
+
+
+
 // Main entry point.
 int main(void)
 {
@@ -158,7 +168,6 @@ State_t state = SYNC_CONTROLLER;
 #define ECHOES 2
 
 int echoes = 0;
-int splat3_lag_correction_count = 0;
 USB_JoystickReport_Input_t last_report;
 
 int command_count = 0;
@@ -166,6 +175,10 @@ int report_count = 0;
 int xpos = 0;
 int ypos = 0;
 int portsval = 0;
+
+const int linesToCorrectLength = sizeof(linesToCorrect) / sizeof(int);
+const bool inCorrectionMode = linesToCorrectLength > 0;
+bool isCorrectionModeErasing = true;
 
 #define max(a, b) (a > b ? a : b)
 #define ms_2_count(ms) (ms / ECHOES / (max(POLLING_MS, 8) / 8 * 8))
@@ -191,6 +204,19 @@ void GetNextReport(USB_JoystickReport_Input_t *const ReportData)
 		return;
 	}
 
+	// Check if this line needs correction when in correction mode
+	bool isLineThatNeedsCorrection = false;
+	if (inCorrectionMode) 
+	{
+		for (size_t i = 0; i < linesToCorrectLength; i++)
+		{
+			if (linesToCorrect[i] == ypos) {
+				isLineThatNeedsCorrection = true;
+				break;
+			}
+		}
+	}
+
 	// States and moves management
 	switch (state)
 	{
@@ -201,14 +227,7 @@ void GetNextReport(USB_JoystickReport_Input_t *const ReportData)
 			state = SYNC_POSITION;
 		}
 		else
-		{
-			// This does not pop up but interferes with the brush selection
-			// if (command_count == ms_2_count(500) || command_count == ms_2_count(1000))
-			// 	ReportData->Button |= SWITCH_L | SWITCH_R;
-			// else if (command_count == ms_2_count(1500) || command_count == ms_2_count(2000))
-			// 	ReportData->Button |= SWITCH_A;
 			command_count++;
-		}
 		break;
 	case SYNC_POSITION:
 		if (command_count > ms_2_count(4000))
@@ -224,40 +243,66 @@ void GetNextReport(USB_JoystickReport_Input_t *const ReportData)
 			ReportData->LX = STICK_MIN;
 			ReportData->LY = STICK_MIN;
 			// Clear the screen
-			if (command_count == ms_2_count(1500) || command_count == ms_2_count(3000))
+			if (!inCorrectionMode && command_count == ms_2_count(1500)) 
 				ReportData->Button |= SWITCH_LCLICK;
+			// Select brush
+			if (command_count == ms_2_count(3000))
+				ReportData->Button |= SWITCH_L;
+
 			command_count++;
 		}
 		break;
 	case MOVE:
-		if ((xpos == 0 && ypos % 2 == 1) || (xpos == 319 && ypos % 2 == 0))
-			// After each line we continue to move into the same direction for 10 times
-			// in order to prevent that issues from lag spikes spill into the next line.
-			if (splat3_lag_correction_count < 10) 
+		// In correction mode we always do one pass from left to right to erase the line.
+		// Then a second pass from right to left to re-ink.
+		if (inCorrectionMode)
+		{
+			if (isLineThatNeedsCorrection)
 			{
-				splat3_lag_correction_count++;
-				if (xpos == 0)
-					ReportData->HAT = HAT_LEFT;
-				else 
+				if (isCorrectionModeErasing && xpos < 319)
 					ReportData->HAT = HAT_RIGHT;
+				else if (isCorrectionModeErasing) 
+				{
+					isCorrectionModeErasing = false;
+					ReportData->HAT = HAT_CENTER; // This makes us stop here twice so we can ink the erased pixel again if needed
+				}
+				else if (!isCorrectionModeErasing && xpos > 0) 
+					ReportData->HAT = HAT_LEFT;
+				else {
+					isCorrectionModeErasing = true; // Reset for next line that needs fixing
+					ReportData->HAT = HAT_BOTTOM;
+				}
 			}
 			else 
-			{
-				splat3_lag_correction_count = 0;
 				ReportData->HAT = HAT_BOTTOM;
-			}
-		else if (ypos % 2 == 0)
-			ReportData->HAT = HAT_RIGHT;
-		else
-			ReportData->HAT = HAT_LEFT;
+		}
+		else 
+		{
+			// Normal printing mode is going back and forth
+			if ((xpos == 0 && ypos % 2 == 1) || (xpos == 319 && ypos % 2 == 0))
+				ReportData->HAT = HAT_BOTTOM;
+			else if (ypos % 2 == 0)
+				ReportData->HAT = HAT_RIGHT;
+			else
+				ReportData->HAT = HAT_LEFT;
+		}
 		state = STOP;
 		break;
 	case STOP:
 		// Inking (the printing patterns above will not move outside the canvas... is not necessary to test them)
-		if (is_black(xpos, ypos)) 
+		if (isLineThatNeedsCorrection) 
 		{
-			ReportData->Button |= SWITCH_A;
+			if (isCorrectionModeErasing)
+				ReportData->Button |= SWITCH_B;
+			else if (is_black(xpos, ypos)) 
+				ReportData->Button |= SWITCH_A;
 		}
+		else if(!inCorrectionMode) {
+			// In printing mode we only ink, no erasing
+			if (is_black(xpos, ypos)) 
+				ReportData->Button |= SWITCH_A;
+		}
+
 		state = MOVE;
 		if (ypos > 119)
 			state = DONE;
@@ -270,15 +315,9 @@ void GetNextReport(USB_JoystickReport_Input_t *const ReportData)
 	{
 		// Position update (diagonal moves doesn't work since they ink two dots... is not necessary to test them)
 		if (ReportData->HAT == HAT_RIGHT) 
-		{
-			if (xpos < 319)
-				xpos++;
-		}
+			xpos++;
 		else if (ReportData->HAT == HAT_LEFT)
-		{
-			if (xpos > 0)
-				xpos--;
-		}
+			xpos--;
 		else if (ReportData->HAT == HAT_TOP)
 			ypos--;
 		else if (ReportData->HAT == HAT_BOTTOM)

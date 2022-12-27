@@ -96,6 +96,17 @@ $ python png2c.py -s yourImage.png
 
 Looks good! Time to get printing.
 
+### Correction Mode
+
+When printing in Splatoon3 you'll usually get two lag spikes during printing.
+If you want to use use the printer to just correct those lines then:
+
+- Open Joystick.c
+- Find the comment `// ===== Corection mode ======`
+- Enter the lines you want to correct (start counting lines with zero)
+
+This will put the printer into correction mode. The specified lines will be reprinted, the rest will be skipped.
+
 ### Sample
 ![http://i.imgur.com/93B1Usb.jpg](http://i.imgur.com/93B1Usb.jpg)
 *image via [/u/Stofers](https://www.reddit.com/user/Stofers)*
